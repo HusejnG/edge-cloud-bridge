@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install libmosquitto and mosquitto broker
+        run: sudo apt-get update && sudo apt-get install -y libmosquitto-dev mosquitto mosquitto-clients
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build edge agent (C)
+        working-directory: edge-agent
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Run edge agent core tests (C)
+        working-directory: edge-agent/build
+        run: ./edge_agent_tests
+
+      - name: Build cloud bridge (C#)
+        working-directory: cloud-bridge
+        run: dotnet build
+
+      - name: Run MQTT protocol tests (C#)
+        working-directory: tests/MqttProtocolTests
+        run: dotnet run
+
+      - name: Start mosquitto broker
+        run: |
+          sudo systemctl stop mosquitto || true
+          mosquitto -d -p 1883
+          sleep 1
+
+      - name: End-to-end integration check
+        run: |
+          cd cloud-bridge
+          timeout 12 dotnet run --no-build -- localhost 1883 "dareto/demo/+/telemetry" 8 > /tmp/bridge_output.txt 2>&1 &
+          BRIDGE_PID=$!
+          sleep 2
+          cd ../edge-agent/build
+          timeout 8 ./edge_agent 5 3
+          wait $BRIDGE_PID
+          echo "--- cloud-bridge output ---"
+          cat /tmp/bridge_output.txt
+          grep -q "messages received : 5" /tmp/bridge_output.txt
+          grep -q "fault readings     : 2" /tmp/bridge_output.txt

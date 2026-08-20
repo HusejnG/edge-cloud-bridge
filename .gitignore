@@ -1,0 +1,13 @@
+# C / CMake
+build/
+*.o
+*.obj
+
+# .NET
+bin/
+obj/
+*.user
+
+# General
+.vscode/
+.vs/
