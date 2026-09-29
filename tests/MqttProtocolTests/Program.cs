@@ -86,6 +86,25 @@ Check("decoding throws on truncated input",
           "this is exactly the bug found when first wiring this up against a real broker");
 }
 
+// ---- PUBACK and PINGREQ ------------------------------------------------------
+// Without PUBACK the broker never releases QoS 1 messages; without PINGREQ
+// it drops an otherwise idle connection after 1.5 x keep-alive.
+
+{
+    byte[] body = BuildPublishBody(topic: "a/b", packetId: 0x0102, payload: "{}"u8.ToArray());
+    Check("QoS 1 publish: packet identifier read correctly",
+          MqttClient.ReadPublishPacketId(body) == 0x0102);
+}
+{
+    byte[] puback = MqttClient.BuildPubAckPacket(0x1234);
+    Check("PUBACK == [0x40, 0x02, id-high, id-low]",
+          puback.SequenceEqual(new byte[] { 0x40, 0x02, 0x12, 0x34 }));
+}
+{
+    byte[] pingreq = MqttClient.BuildPingReqPacket();
+    Check("PINGREQ == [0xC0, 0x00]", pingreq.SequenceEqual(new byte[] { 0xC0, 0x00 }));
+}
+
 Console.WriteLine();
 Console.WriteLine($"{passed}/{passed + failed} checks passed");
 return failed == 0 ? 0 : 1;

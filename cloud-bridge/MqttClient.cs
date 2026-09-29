@@ -12,10 +12,10 @@
 //      already does.
 //
 // This implements just enough of MQTT 3.1.1 (OASIS standard) to connect,
-// subscribe to one topic, and receive PUBLISH packets: CONNECT/CONNACK,
-// SUBSCRIBE/SUBACK, PUBLISH. It does not implement QoS 1/2 acknowledgment
-// flows, PINGREQ keep-alive, or clean unsubscribe; the README explains
-// what that means for long-running use.
+// subscribe to one topic, receive PUBLISH packets and stay connected:
+// CONNECT/CONNACK, SUBSCRIBE/SUBACK, PUBLISH, PUBACK for QoS 1, and
+// PINGREQ/PINGRESP keep-alive. It does not implement the QoS 2 flow,
+// clean DISCONNECT or TLS.
 
 using System.Net.Sockets;
 using System.Text;
@@ -27,8 +27,11 @@ public enum MqttPacketType : byte
     Connect = 1,
     ConnAck = 2,
     Publish = 3,
+    PubAck = 4,
     Subscribe = 8,
     SubAck = 9,
+    PingReq = 12,
+    PingResp = 13,
 }
 
 public sealed record MqttMessage(string Topic, byte[] Payload)
@@ -38,8 +41,17 @@ public sealed record MqttMessage(string Topic, byte[] Payload)
 
 public sealed class MqttClient : IDisposable
 {
+    // Keep-alive announced in CONNECT. The broker closes the connection if
+    // it hears nothing from the client for 1.5 x this interval.
+    private const ushort KeepAliveSeconds = 60;
+
     private readonly TcpClient _tcp = new();
     private NetworkStream? _stream;
+
+    // The read loop (PUBACK) and the keep-alive loop (PINGREQ) both write to
+    // the same stream, so writes are serialised to keep packets whole.
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly CancellationTokenSource _keepAliveCts = new();
 
     public async Task ConnectAsync(string host, int port, string clientId)
     {
@@ -47,7 +59,7 @@ public sealed class MqttClient : IDisposable
         _stream = _tcp.GetStream();
 
         byte[] packet = BuildConnectPacket(clientId);
-        await _stream.WriteAsync(packet);
+        await WriteAsync(packet);
 
         byte[] connAck = await ReadFixedLengthPacketAsync(expectedRemainingLength: 2);
         // CONNACK payload: [session-present-flag, return-code]. Return
@@ -56,6 +68,10 @@ public sealed class MqttClient : IDisposable
         {
             throw new IOException($"MQTT CONNECT rejected, return code {connAck[1]}");
         }
+
+        // Fire-and-forget: the loop ends when the client is disposed or the
+        // connection drops, and it never throws.
+        _ = KeepAliveLoopAsync(_keepAliveCts.Token);
     }
 
     public async Task SubscribeAsync(string topicFilter, byte qos = 0)
@@ -64,7 +80,7 @@ public sealed class MqttClient : IDisposable
 
         ushort packetId = 1;
         byte[] packet = BuildSubscribePacket(packetId, topicFilter, qos);
-        await _stream.WriteAsync(packet);
+        await WriteAsync(packet);
 
         // SUBACK: variable header (2-byte packet id) + payload (granted QoS
         // per requested topic, 1 byte here since we subscribed to one).
@@ -72,9 +88,10 @@ public sealed class MqttClient : IDisposable
     }
 
     /// Reads and yields PUBLISH messages until the stream closes or the
-    /// cancellation token fires. Ignores any packet type that isn't
-    /// PUBLISH (e.g. a future PINGRESP), which is safe because the fixed
-    /// header always tells us exactly how many bytes to skip.
+    /// cancellation token fires. QoS 1 messages are acknowledged with
+    /// PUBACK before they are handed to the caller. Any other packet type
+    /// (e.g. PINGRESP) is skipped, which is safe because the fixed header
+    /// always tells us exactly how many bytes to skip.
     public async IAsyncEnumerable<MqttMessage> ReadMessagesAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -93,6 +110,16 @@ public sealed class MqttClient : IDisposable
             if (packetType != MqttPacketType.Publish) continue;
 
             (string topic, byte[] payload) = ParsePublishBody(body, qos);
+
+            // We subscribe with a maximum QoS of 1, so the broker never sends
+            // QoS 2 and PUBACK is the only acknowledgment needed. Without it
+            // the broker keeps each message "in flight" and stops delivering
+            // once its in-flight limit is reached.
+            if (qos == 1)
+            {
+                await WriteAsync(BuildPubAckPacket(ReadPublishPacketId(body)), ct);
+            }
+
             yield return new MqttMessage(topic, payload);
         }
     }
@@ -108,7 +135,7 @@ public sealed class MqttClient : IDisposable
         WithLengthPrefix(variableAndPayload, protocolName);
         variableAndPayload.WriteByte(0x04); // protocol level: MQTT 3.1.1
         variableAndPayload.WriteByte(0x02); // connect flags: clean session
-        WriteUInt16BigEndian(variableAndPayload, 60); // keep-alive seconds
+        WriteUInt16BigEndian(variableAndPayload, KeepAliveSeconds);
         WithLengthPrefix(variableAndPayload, clientIdBytes);
 
         return WrapWithFixedHeader(MqttPacketType.Connect, flags: 0x00,
@@ -130,6 +157,23 @@ public sealed class MqttClient : IDisposable
         return WrapWithFixedHeader(MqttPacketType.Subscribe, flags: 0x02,
                                     body: body.ToArray());
     }
+
+    /// PUBACK: fixed header 0x40, remaining length 2, then the packet
+    /// identifier of the PUBLISH being acknowledged.
+    internal static byte[] BuildPubAckPacket(ushort packetId) => new byte[]
+    {
+        (byte)((byte)MqttPacketType.PubAck << 4),
+        0x02,
+        (byte)(packetId >> 8),
+        (byte)(packetId & 0xFF),
+    };
+
+    /// PINGREQ: fixed header 0xC0 and a remaining length of 0.
+    internal static byte[] BuildPingReqPacket() => new byte[]
+    {
+        (byte)((byte)MqttPacketType.PingReq << 4),
+        0x00,
+    };
 
     private static byte[] WrapWithFixedHeader(MqttPacketType type, byte flags, byte[] body)
     {
@@ -160,6 +204,15 @@ public sealed class MqttClient : IDisposable
         }
         byte[] payload = body[payloadStart..];
         return (topic, payload);
+    }
+
+    /// Packet identifier of a QoS 1/2 PUBLISH body: the 2 bytes right after
+    /// the topic name.
+    internal static ushort ReadPublishPacketId(byte[] body)
+    {
+        int topicLen = (body[0] << 8) | body[1];
+        int idStart = 2 + topicLen;
+        return (ushort)((body[idStart] << 8) | body[idStart + 1]);
     }
 
     // ---- MQTT variable-length "Remaining Length" encoding -----------------------
@@ -230,6 +283,40 @@ public sealed class MqttClient : IDisposable
         return value;
     }
 
+    // ---- writing and keep-alive ---------------------------------------------------
+
+    private async Task WriteAsync(byte[] packet, CancellationToken ct = default)
+    {
+        await _writeLock.WaitAsync(ct);
+        try
+        {
+            await _stream!.WriteAsync(packet, ct);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    /// Sends PINGREQ at half the keep-alive interval, so the broker hears
+    /// from the client well within its 1.5 x keep-alive timeout even when
+    /// no messages arrive. The broker's PINGRESP is skipped by the read loop.
+    private async Task KeepAliveLoopAsync(CancellationToken ct)
+    {
+        var interval = TimeSpan.FromSeconds(KeepAliveSeconds / 2.0);
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(interval, ct);
+                await WriteAsync(BuildPingReqPacket(), ct);
+            }
+        }
+        catch (OperationCanceledException) { }  // client disposed
+        catch (IOException) { }                 // connection closed; the read loop reports it
+        catch (ObjectDisposedException) { }     // stream disposed while a ping was pending
+    }
+
     // ---- small stream helpers --------------------------------------------------
 
     private static void WithLengthPrefix(Stream stream, byte[] data)
@@ -278,7 +365,9 @@ public sealed class MqttClient : IDisposable
 
     public void Dispose()
     {
+        _keepAliveCts.Cancel();
         _stream?.Dispose();
         _tcp.Dispose();
+        _keepAliveCts.Dispose();
     }
 }

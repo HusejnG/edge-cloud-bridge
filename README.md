@@ -150,27 +150,19 @@ dotnet run
 ## What's implemented vs. deliberately out of scope
 
 Implemented: `CONNECT`/`CONNACK`, `SUBSCRIBE`/`SUBACK`, receiving
-`PUBLISH` at any QoS, MQTT's variable-length "Remaining Length" encoding.
+`PUBLISH` at QoS 0 and 1, `PUBACK` for every QoS 1 message, `PINGREQ`
+keep-alive at half the 60 s keep-alive interval, and MQTT's
+variable-length "Remaining Length" encoding. The read loop and the
+keep-alive loop share one socket, so writes go through a lock to keep
+packets whole.
 
-Not implemented: `PUBACK` (and the QoS 2 flow `PUBREC`/`PUBREL`/`PUBCOMP`),
-`PINGREQ` keep-alive, clean `DISCONNECT`, and TLS. Two of these matter
-for long runs:
-
-- The client subscribes at QoS 1 but never sends `PUBACK`, so the broker
-  keeps every delivered message "in flight". Once its in-flight limit is
-  reached (20 by default in Mosquitto), delivery stalls.
-- The client announces a 60 s keep-alive but never sends `PINGREQ`. If
-  no other packet goes from client to broker, the broker closes the
-  connection after 1.5 × keep-alive (90 s).
-
-Neither affects the short CI run, but both would need fixing for a
-long-running service. For anything beyond this demo, a full client
-library (e.g. MQTTnet) is the right choice.
+Not implemented: the QoS 2 flow (`PUBREC`/`PUBREL`/`PUBCOMP`; the client
+subscribes with a maximum QoS of 1, so the broker never sends QoS 2),
+clean `DISCONNECT`, reconnect, and TLS. For anything beyond this demo,
+a full client library (e.g. MQTTnet) is the right choice.
 
 ## Possible extensions
 
-- Publish acknowledgment (`PUBACK`) so QoS 1 delivery is actually
-  guaranteed rather than best-effort
 - A minimal OPC UA variant alongside MQTT, since OPC UA is the other
   major industrial protocol for connecting PLCs and industrial PCs to
   the cloud

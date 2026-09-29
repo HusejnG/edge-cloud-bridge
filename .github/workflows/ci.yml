@@ -39,10 +39,10 @@ jobs:
         working-directory: tests/MqttProtocolTests
         run: dotnet run
 
-      - name: Start mosquitto broker
+      - name: Start mosquitto broker (verbose log, to check acknowledgments)
         run: |
           sudo systemctl stop mosquitto || true
-          mosquitto -d -p 1883
+          nohup mosquitto -v -p 1883 > /tmp/mosquitto.log 2>&1 &
           sleep 1
 
       - name: End-to-end integration check
@@ -58,3 +58,7 @@ jobs:
           cat /tmp/bridge_output.txt
           grep -q "messages received : 5" /tmp/bridge_output.txt
           grep -q "fault readings     : 2" /tmp/bridge_output.txt
+          echo "--- broker log ---"
+          cat /tmp/mosquitto.log
+          # every QoS 1 message delivered to the bridge must be acknowledged
+          test "$(grep -c 'Received PUBACK from cloud-bridge-dashboard' /tmp/mosquitto.log)" -eq 5
