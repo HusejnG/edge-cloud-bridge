@@ -48,7 +48,7 @@ jobs:
       - name: End-to-end integration check
         run: |
           cd cloud-bridge
-          timeout 12 dotnet run --no-build -- localhost 1883 "dareto/demo/+/telemetry" 8 > /tmp/bridge_output.txt 2>&1 &
+          timeout 12 dotnet run --no-build -- localhost 1883 "factory/demo/+/telemetry" 8 > /tmp/bridge_output.txt 2>&1 &
           BRIDGE_PID=$!
           sleep 2
           cd ../edge-agent/build

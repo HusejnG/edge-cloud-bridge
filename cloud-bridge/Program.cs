@@ -14,7 +14,7 @@ using CloudBridge;
 
 string brokerHost = args.Length > 0 ? args[0] : "localhost";
 int brokerPort = args.Length > 1 ? int.Parse(args[1]) : 1883;
-string topicFilter = args.Length > 2 ? args[2] : "dareto/demo/+/telemetry";
+string topicFilter = args.Length > 2 ? args[2] : "factory/demo/+/telemetry";
 
 Console.WriteLine($"cloud-bridge: connecting to {brokerHost}:{brokerPort}, subscribing to '{topicFilter}'");
 

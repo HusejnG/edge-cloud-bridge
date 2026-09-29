@@ -17,7 +17,7 @@
 
 #define BROKER_HOST "localhost"
 #define BROKER_PORT 1883
-#define TOPIC_PREFIX "dareto/demo/"
+#define TOPIC_PREFIX "factory/demo/"
 #define PUBLISH_INTERVAL_SEC 1
 
 int main(int argc, char **argv) {

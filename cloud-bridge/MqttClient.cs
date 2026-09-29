@@ -6,16 +6,16 @@
 //   1. No external dependency needed for what this project actually uses
 //      (CONNECT, SUBSCRIBE, and receiving PUBLISH) - pulling in a full
 //      client library for three packet types is disproportionate.
-//   2. Implementing the wire format by hand is the same skill this whole
-//      portfolio is built around (see bit-protocol-parser): understanding
-//      a binary protocol well enough to encode and decode it yourself,
-//      not just call something that already does.
+//   2. Implementing the wire format by hand means understanding a binary
+//      protocol well enough to encode and decode it yourself (the same
+//      idea as bit-protocol-parser), not just calling something that
+//      already does.
 //
 // This implements just enough of MQTT 3.1.1 (OASIS standard) to connect,
 // subscribe to one topic, and receive PUBLISH packets: CONNECT/CONNACK,
 // SUBSCRIBE/SUBACK, PUBLISH. It does not implement QoS 1/2 acknowledgment
-// flows, PINGREQ keep-alive, or clean unsubscribe - noted as a
-// deliberate scope limit, not an oversight, in the README.
+// flows, PINGREQ keep-alive, or clean unsubscribe; the README explains
+// what that means for long-running use.
 
 using System.Net.Sockets;
 using System.Text;

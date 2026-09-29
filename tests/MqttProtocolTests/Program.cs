@@ -1,9 +1,8 @@
 // Program.cs (MqttProtocolTests)
 //
-// A minimal hand-rolled test runner -- no NuGet package available in
-// this build environment, so rather than skip testing, this uses a
-// small assert-and-report harness. Every check is still a real,
-// independent assertion; only the framework around them is homemade.
+// A minimal hand-rolled test runner that keeps the project free of
+// external packages. Every check is a real, independent assertion; only
+// the small assert-and-report harness around them is homemade.
 
 using CloudBridge;
 
@@ -77,10 +76,10 @@ Check("decoding throws on truncated input",
 {
     // QoS 1: topic length(2) + topic + packet id(2) + payload.
     byte[] payloadBytes = """{"machine_id":"press-01","status":"ok"}"""u8.ToArray();
-    byte[] body = BuildPublishBody(topic: "dareto/demo/press-01/telemetry",
+    byte[] body = BuildPublishBody(topic: "factory/demo/press-01/telemetry",
                                     packetId: 1, payload: payloadBytes);
     (string topic, byte[] payload) = MqttClient.ParsePublishBody(body, qos: 1);
-    Check("QoS 1 publish: topic parsed correctly", topic == "dareto/demo/press-01/telemetry");
+    Check("QoS 1 publish: topic parsed correctly", topic == "factory/demo/press-01/telemetry");
     Check("QoS 1 publish: packet identifier correctly skipped",
           payload.SequenceEqual(payloadBytes),
           "payload would be offset by 2 bytes if the packet id weren't skipped -- " +

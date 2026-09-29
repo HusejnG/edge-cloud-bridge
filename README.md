@@ -4,9 +4,8 @@ A two-language demo mirroring the "device bridge" pattern common in
 Industrial IoT: a **C edge agent** simulates a factory-floor sensor and
 publishes telemetry over MQTT; a **C# cloud-side service**, with its MQTT
 client hand-written over a raw TCP socket, subscribes and displays a live
-dashboard. Built specifically to exercise the C/C# combination used in
-industrial edge/cloud platforms, alongside the automotive-focused C++
-projects elsewhere in this portfolio.
+dashboard. It exercises the C/C# combination that is common in industrial
+edge/cloud platforms.
 
 ## Why C and C#, and why by hand
 
@@ -31,8 +30,7 @@ edge-cloud-bridge/
 │   └── CMakeLists.txt
 ├── cloud-bridge/              (C#)
 │   ├── MqttClient.cs           → MQTT 3.1.1 client over a raw TCP socket
-│   ├── Program.cs              → subscribes, parses JSON, prints a dashboard
-│   └── NuGet.Config             → package sources cleared: no dependencies
+│   └── Program.cs              → subscribes, parses JSON, prints a dashboard
 ├── tests/
 │   └── MqttProtocolTests/      → hand-rolled tests for the MQTT wire format
 └── .github/workflows/ci.yml
@@ -60,17 +58,10 @@ identifier, which is `0x00` for small IDs. `System.Text.Json` correctly
 rejected a JSON document that starts with a null byte.
 
 The fix (`ParsePublishBody` in `MqttClient.cs`) skips those 2 bytes
-whenever QoS > 0, and `test_edge_agent_core.c`'s
-`"QoS 1 publish: packet identifier correctly skipped"` check pins the
-regression down explicitly — it constructs a QoS 1 body by hand and
-verifies the parsed payload matches exactly.
-
-This is worth being upfront about in an interview: it's a real,
-specific example of implementing a binary protocol from its
-specification rather than a library, hitting an edge case the spec
-mentions but that's easy to overlook, and fixing it with a test that
-demonstrates the fix rather than just re-running the demo and eyeballing
-the output.
+whenever QoS > 0. The `"QoS 1 publish: packet identifier correctly skipped"`
+check in `tests/MqttProtocolTests/Program.cs` pins the regression down: it
+builds a QoS 1 body by hand and verifies that the parsed payload matches
+exactly.
 
 ## Building
 
@@ -96,11 +87,12 @@ Start a local MQTT broker (mosquitto, install via your package manager):
 mosquitto -p 1883
 ```
 
-In one terminal, start the dashboard (listens for 30 seconds by default when
-given a duration argument, or indefinitely with none):
+In one terminal, start the dashboard. It runs until you stop it with
+Ctrl+C; pass a fourth argument to stop after that many seconds instead:
 ```bash
 cd cloud-bridge
-dotnet run -- localhost 1883 "dareto/demo/+/telemetry"
+dotnet run -- localhost 1883 "factory/demo/+/telemetry"        # until Ctrl+C
+dotnet run -- localhost 1883 "factory/demo/+/telemetry" 30     # 30 seconds
 ```
 
 In another terminal, run the edge agent (10 readings, no simulated fault):
@@ -118,14 +110,14 @@ after reading 4:
 ### Sample output
 
 ```
-edge-agent: publishing 6 readings for 'press-01' to topic 'dareto/demo/press-01/telemetry'
+edge-agent: publishing 6 readings for 'press-01' to topic 'factory/demo/press-01/telemetry'
   [0] {"machine_id":"press-01","timestamp":1787093098,"temperature_c":41.60,"vibration_mm_s":2.00,"rpm":1444.0,"status":"ok"}
   ...
   [4] {"machine_id":"press-01","timestamp":1787093102,"temperature_c":41.60,"vibration_mm_s":3.80,"rpm":1450.0,"status":"fault"}
 ```
 
 ```
-cloud-bridge: connecting to localhost:1883, subscribing to 'dareto/demo/+/telemetry'
+cloud-bridge: connecting to localhost:1883, subscribing to 'factory/demo/+/telemetry'
 cloud-bridge: subscribed, waiting for telemetry...
 
   [press-01] temp= 41.60C  vibration= 2.00mm/s  rpm= 1444.0  status=ok
@@ -160,21 +152,27 @@ dotnet run
 Implemented: `CONNECT`/`CONNACK`, `SUBSCRIBE`/`SUBACK`, receiving
 `PUBLISH` at any QoS, MQTT's variable-length "Remaining Length" encoding.
 
-Not implemented, and not needed for what this project does: `PUBACK`/
-`PUBREC`/`PUBREL`/`PUBCOMP` (the QoS 1/2 acknowledgment flows — the
-broker doesn't require them from a subscriber that just wants to
-receive), `PINGREQ` keep-alive, clean `DISCONNECT`, and TLS. A production
-MQTT client would need all of these; this one implements exactly the
-subset that this specific bridge exercises; a full client library
-(e.g. MQTTnet) would be the right call for anything beyond a portfolio
-demo.
+Not implemented: `PUBACK` (and the QoS 2 flow `PUBREC`/`PUBREL`/`PUBCOMP`),
+`PINGREQ` keep-alive, clean `DISCONNECT`, and TLS. Two of these matter
+for long runs:
+
+- The client subscribes at QoS 1 but never sends `PUBACK`, so the broker
+  keeps every delivered message "in flight". Once its in-flight limit is
+  reached (20 by default in Mosquitto), delivery stalls.
+- The client announces a 60 s keep-alive but never sends `PINGREQ`. If
+  no other packet goes from client to broker, the broker closes the
+  connection after 1.5 × keep-alive (90 s).
+
+Neither affects the short CI run, but both would need fixing for a
+long-running service. For anything beyond this demo, a full client
+library (e.g. MQTTnet) is the right choice.
 
 ## Possible extensions
 
 - Publish acknowledgment (`PUBACK`) so QoS 1 delivery is actually
   guaranteed rather than best-effort
 - A minimal OPC UA variant alongside MQTT, since OPC UA is the other
-  major industrial protocol (used e.g. by Dareto's Device Bridge)
-  connecting PLCs/industrial PCs to the cloud
+  major industrial protocol for connecting PLCs and industrial PCs to
+  the cloud
 - Persist readings to a small database instead of printing them, and
   serve the dashboard over HTTP instead of the console
